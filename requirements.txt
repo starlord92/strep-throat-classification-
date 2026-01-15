@@ -1,0 +1,10 @@
+torch
+torchvision
+numpy<2.0
+pandas
+scikit-learn
+pillow
+opencv-python<4.12
+matplotlib
+tqdm
+tensorboard
