@@ -45,7 +45,7 @@ Repository Structure
 │       ├── fold_4/
 │       └── fold_5/             (each same as fold_1)
 ├── requirements.txt
-├── EXECUTIVE_SUMMARY.md       # Optional 1–2 page report
+├── EXECUTIVE_SUMMARY.md
 └── README.md
 ```
 
