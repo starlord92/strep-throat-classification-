@@ -4,6 +4,7 @@ Training script for strep throat classification model.
 
 import os
 import argparse
+import numpy as np
 
 
 def get_transforms(is_train=True):
@@ -169,75 +170,60 @@ def plot_confusion_matrix(y_true, y_pred, save_path):
     plt.close()
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Train strep throat classifier')
-    parser.add_argument('--csv_path', type=str, 
-                       default='data/sample_dataset_100.csv',
-                       help='Path to CSV file')
-    parser.add_argument('--images_dir', type=str, 
-                       default='data/images',
-                       help='Directory containing images')
-    parser.add_argument('--output_dir', type=str, default='outputs',
-                       help='Output directory for models and results')
-    parser.add_argument('--mode', type=str, default='with_clinical',
-                       choices=['with_clinical', 'image_only'],
-                       help='Training mode: with_clinical or image_only')
-    parser.add_argument('--batch_size', type=int, default=8,
-                       help='Batch size')
-    parser.add_argument('--epochs', type=int, default=15,
-                       help='Number of epochs')
-    parser.add_argument('--lr', type=float, default=1e-4,
-                       help='Learning rate')
-    parser.add_argument('--val_split', type=float, default=0.2,
-                       help='Validation split ratio')
-    parser.add_argument('--seed', type=int, default=42,
-                       help='Random seed')
+def run_training(train_indices, val_indices, full_dataset, args, device, use_clinical, fold_id=None):
+    """
+    Run training for a single train/val split.
     
-    args = parser.parse_args()
+    Args:
+        train_indices: List of indices for training set
+        val_indices: List of indices for validation set
+        full_dataset: Full StrepThroatDataset
+        args: Parsed arguments
+        device: torch device
+        use_clinical: Whether to use clinical features
+        fold_id: Optional fold ID (for k-fold CV), None for single split
     
-    # Determine if clinical features should be used
-    use_clinical = (args.mode == 'with_clinical')
-
-    # Heavy imports (kept here so `python train.py --help` works even if optional deps are broken)
+    Returns:
+        Dictionary with final validation metrics
+    """
     import torch
     import torch.nn as nn
     import torch.optim as optim
-    from torch.utils.data import DataLoader, random_split
+    from torch.utils.data import DataLoader, Subset
     import pandas as pd
     import matplotlib.pyplot as plt
     from dataset import StrepThroatDataset
     from model import StrepThroatClassifier
     
-    # Set random seed
-    torch.manual_seed(args.seed)
+    # Create output directory for this fold
+    if fold_id is not None:
+        output_dir = os.path.join(args.output_dir, f'fold_{fold_id}')
+        print(f"\n{'='*60}")
+        print(f"Fold {fold_id}/{args.k_folds}")
+        print(f"{'='*60}")
+    else:
+        output_dir = args.output_dir
+    os.makedirs(output_dir, exist_ok=True)
     
-    # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
-    
-    # Device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-    print(f"Training mode: {args.mode} (use_clinical={use_clinical})")
-    
-    # Load dataset
-    print("Loading dataset...")
-    full_dataset = StrepThroatDataset(
+    # Create train and val datasets with appropriate transforms
+    # We need to create separate dataset instances with different transforms
+    train_dataset_full = StrepThroatDataset(
         csv_path=args.csv_path,
         images_dir=args.images_dir,
         use_clinical_features=use_clinical,
         transform=get_transforms(is_train=True)
     )
-    
-    # Split dataset
-    val_size = int(len(full_dataset) * args.val_split)
-    train_size = len(full_dataset) - val_size
-    train_dataset, val_dataset = random_split(
-        full_dataset, [train_size, val_size],
-        generator=torch.Generator().manual_seed(args.seed)
+    val_dataset_full = StrepThroatDataset(
+        csv_path=args.csv_path,
+        images_dir=args.images_dir,
+        use_clinical_features=use_clinical,
+        transform=get_transforms(is_train=False)
     )
     
-    # Use validation transforms for validation set
-    val_dataset.dataset.transform = get_transforms(is_train=False)
+    # Note: train_indices and val_indices refer to positions in the full dataset
+    # Since all dataset instances load from the same CSV/images, we can use the same indices
+    train_dataset = Subset(train_dataset_full, train_indices)
+    val_dataset = Subset(val_dataset_full, val_indices)
     
     # Create data loaders
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, 
@@ -247,7 +233,7 @@ def main():
     
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
     
-    # Create model
+    # Create model (reinitialize for each fold)
     model = StrepThroatClassifier(
         num_clinical_features=7,
         use_clinical_features=use_clinical,
@@ -307,16 +293,19 @@ def main():
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_acc': val_acc,
-            }, os.path.join(args.output_dir, 'best_model.pth'))
+            }, os.path.join(output_dir, 'best_model.pth'))
             print(f"Saved best model with val acc: {best_val_acc:.4f}")
     
     # Final evaluation
     print("\n" + "="*50)
-    print("Final Results")
+    if fold_id is not None:
+        print(f"Final Results - Fold {fold_id}")
+    else:
+        print("Final Results")
     print("="*50)
     
     # Load best model for final evaluation
-    checkpoint = torch.load(os.path.join(args.output_dir, 'best_model.pth'))
+    checkpoint = torch.load(os.path.join(output_dir, 'best_model.pth'))
     model.load_state_dict(checkpoint['model_state_dict'])
     
     # Evaluate on validation set
@@ -337,7 +326,7 @@ def main():
     # Plot confusion matrix
     plot_confusion_matrix(
         val_labels, val_preds,
-        os.path.join(args.output_dir, 'confusion_matrix.png')
+        os.path.join(output_dir, 'confusion_matrix.png')
     )
     
     # Plot training curves
@@ -360,7 +349,7 @@ def main():
     plt.title('Training and Validation Accuracy')
     
     plt.tight_layout()
-    plt.savefig(os.path.join(args.output_dir, 'training_curves.png'))
+    plt.savefig(os.path.join(output_dir, 'training_curves.png'))
     plt.close()
     
     # Save metrics to CSV
@@ -372,7 +361,7 @@ def main():
         'val_acc': val_accs,
         'val_roc_auc': [auc if auc is not None else float('nan') for auc in val_roc_aucs]
     })
-    metrics_df.to_csv(os.path.join(args.output_dir, 'training_metrics.csv'), index=False)
+    metrics_df.to_csv(os.path.join(output_dir, 'training_metrics.csv'), index=False)
     
     # Save final metrics
     final_metrics = {
@@ -383,11 +372,153 @@ def main():
         'roc_auc': val_roc_auc if val_roc_auc is not None else float('nan')
     }
     pd.DataFrame([final_metrics]).to_csv(
-        os.path.join(args.output_dir, 'final_metrics.csv'), index=False
+        os.path.join(output_dir, 'final_metrics.csv'), index=False
     )
     
-    print(f"\nResults saved to {args.output_dir}/")
+    print(f"\nResults saved to {output_dir}/")
     print("="*50)
+    
+    return final_metrics
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Train strep throat classifier')
+    parser.add_argument('--csv_path', type=str, 
+                       default='data/sample_dataset_100.csv',
+                       help='Path to CSV file')
+    parser.add_argument('--images_dir', type=str, 
+                       default='data/images',
+                       help='Directory containing images')
+    parser.add_argument('--output_dir', type=str, default='outputs',
+                       help='Output directory for models and results')
+    parser.add_argument('--mode', type=str, default='with_clinical',
+                       choices=['with_clinical', 'image_only'],
+                       help='Training mode: with_clinical or image_only')
+    parser.add_argument('--batch_size', type=int, default=8,
+                       help='Batch size')
+    parser.add_argument('--epochs', type=int, default=15,
+                       help='Number of epochs')
+    parser.add_argument('--lr', type=float, default=1e-4,
+                       help='Learning rate')
+    parser.add_argument('--val_split', type=float, default=0.2,
+                       help='Validation split ratio (used when k_folds <= 1)')
+    parser.add_argument('--seed', type=int, default=42,
+                       help='Random seed')
+    parser.add_argument('--k_folds', type=int, default=1,
+                       help='Number of folds for cross-validation. If > 1, uses StratifiedKFold. If <= 1, uses single train/val split.')
+    
+    args = parser.parse_args()
+    
+    # Determine if clinical features should be used
+    use_clinical = (args.mode == 'with_clinical')
+
+    # Heavy imports (kept here so `python train.py --help` works even if optional deps are broken)
+    import torch
+    from torch.utils.data import random_split
+    import pandas as pd
+    from dataset import StrepThroatDataset
+    from sklearn.model_selection import StratifiedKFold
+    
+    # Set random seed
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    print(f"Training mode: {args.mode} (use_clinical={use_clinical})")
+    
+    # Load dataset
+    print("Loading dataset...")
+    full_dataset = StrepThroatDataset(
+        csv_path=args.csv_path,
+        images_dir=args.images_dir,
+        use_clinical_features=use_clinical,
+        transform=get_transforms(is_train=True)
+    )
+    
+    # Load CSV to get labels for stratified splitting
+    df = pd.read_csv(args.csv_path)
+    df['label_encoded'] = (df['label'] == 'Positive').astype(int)
+    labels = df['label_encoded'].values
+    
+    if args.k_folds > 1:
+        # K-fold cross-validation mode
+        print(f"\nRunning {args.k_folds}-fold stratified cross-validation...")
+        
+        skf = StratifiedKFold(n_splits=args.k_folds, shuffle=True, random_state=args.seed)
+        fold_metrics = []
+        
+        for fold_id, (train_idx, val_idx) in enumerate(skf.split(np.arange(len(df)), labels), 1):
+            metrics = run_training(
+                train_indices=train_idx.tolist(),
+                val_indices=val_idx.tolist(),
+                full_dataset=full_dataset,
+                args=args,
+                device=device,
+                use_clinical=use_clinical,
+                fold_id=fold_id
+            )
+            metrics['fold'] = fold_id
+            fold_metrics.append(metrics)
+        
+        # Aggregate results
+        print("\n" + "="*60)
+        print("Cross-Validation Summary")
+        print("="*60)
+        
+        metrics_df = pd.DataFrame(fold_metrics)
+        
+        # Compute mean and std for each metric
+        summary = {}
+        for metric in ['accuracy', 'precision', 'recall', 'f1_score', 'roc_auc']:
+            values = metrics_df[metric].values
+            summary[f'{metric}_mean'] = np.mean(values)
+            summary[f'{metric}_std'] = np.std(values)
+        
+        summary_df = pd.DataFrame([summary])
+        summary_df.to_csv(os.path.join(args.output_dir, 'cv_summary.csv'), index=False)
+        
+        # Save per-fold metrics
+        metrics_df.to_csv(os.path.join(args.output_dir, 'cv_fold_metrics.csv'), index=False)
+        
+        # Print summary
+        print("\nAggregated Metrics (Mean ± Std):")
+        for metric in ['accuracy', 'precision', 'recall', 'f1_score', 'roc_auc']:
+            mean_val = summary[f'{metric}_mean']
+            std_val = summary[f'{metric}_std']
+            print(f"  {metric.capitalize():12s}: {mean_val:.4f} ± {std_val:.4f}")
+        
+        print(f"\nPer-fold metrics saved to {args.output_dir}/cv_fold_metrics.csv")
+        print(f"Summary saved to {args.output_dir}/cv_summary.csv")
+        print("="*60)
+        
+    else:
+        # Single train/val split mode (original behavior)
+        print("\nRunning single train/val split...")
+        
+        val_size = int(len(full_dataset) * args.val_split)
+        train_size = len(full_dataset) - val_size
+        train_dataset, val_dataset = random_split(
+            full_dataset, [train_size, val_size],
+            generator=torch.Generator().manual_seed(args.seed)
+        )
+        
+        train_indices = train_dataset.indices
+        val_indices = val_dataset.indices
+        
+        metrics = run_training(
+            train_indices=train_indices,
+            val_indices=val_indices,
+            full_dataset=full_dataset,
+            args=args,
+            device=device,
+            use_clinical=use_clinical,
+            fold_id=None
+        )
 
 
 if __name__ == '__main__':

@@ -2,7 +2,7 @@ Strep Throat Classification – Deep Learning
 
 This repository contains a deep learning solution for classifying throat images as strep-positive or strep-negative, with optional integration of structured clinical symptom features.
 
-The goal of this project is to demonstrate model design, evaluation judgment, and clear communication under small-data constraints.
+The goal of this project is to demonstrate model design, evaluation judgment, and clear communication under severe small-data constraints.
 
 Project Overview
 
@@ -22,10 +22,30 @@ Repository Structure
 ├── src/
 │   ├── dataset.py             # Dataset + transforms
 │   ├── model.py               # Image-only and multimodal models
-│   ├── train.py               # Training + validation
+│   ├── train.py               # Training + validation (single split + k-fold CV)
 │   └── evaluate.py            # Evaluation utilities
-├── outputs/                   # Saved metrics, plots, checkpoints
+├── outputs/                   # Saved metrics, plots, checkpoints (created by train.py --output_dir)
+│   ├── image_only/            # Single-split example
+│   │   ├── best_model.pth
+│   │   ├── final_metrics.csv
+│   │   ├── training_metrics.csv
+│   │   ├── confusion_matrix.png
+│   │   └── training_curves.png
+│   └── image_only_cv/         # K-fold example (k=5)
+│       ├── cv_summary.csv
+│       ├── cv_fold_metrics.csv
+│       ├── fold_1/
+│       │   ├── best_model.pth
+│       │   ├── final_metrics.csv
+│       │   ├── training_metrics.csv
+│       │   ├── confusion_matrix.png
+│       │   └── training_curves.png
+│       ├── fold_2/
+│       ├── fold_3/
+│       ├── fold_4/
+│       └── fold_5/             (each same as fold_1)
 ├── requirements.txt
+├── EXECUTIVE_SUMMARY.md       # Optional 1–2 page report
 └── README.md
 ```
 
@@ -49,7 +69,9 @@ Usage
 
 All commands should be run from the repository root.
 
-Train image-only model
+Single Train/Validation Split (Sanity Check)
+
+Train image-only model with a single stratified 80/20 split:
 
 ```bash
 python src/train.py \
@@ -58,12 +80,13 @@ python src/train.py \
   --batch_size 8 \
   --lr 1e-4 \
   --seed 42 \
+  --k_folds 1 \
   --csv_path data/sample_dataset_100.csv \
   --images_dir data/images \
   --output_dir outputs/image_only
 ```
 
-Train image + clinical features model
+Train image + clinical features model:
 
 ```bash
 python src/train.py \
@@ -72,10 +95,36 @@ python src/train.py \
   --batch_size 8 \
   --lr 1e-4 \
   --seed 42 \
+  --k_folds 1 \
   --csv_path data/sample_dataset_100.csv \
   --images_dir data/images \
   --output_dir outputs/with_clinical
 ```
+
+Single-split training is primarily used for sanity checking and fast iteration.
+
+Stratified K-Fold Cross-Validation (Primary Evaluation)
+
+Train using 5-fold stratified cross-validation:
+
+```bash
+python src/train.py \
+  --mode image_only \
+  --epochs 15 \
+  --batch_size 8 \
+  --lr 1e-4 \
+  --seed 42 \
+  --k_folds 5 \
+  --csv_path data/sample_dataset_100.csv \
+  --images_dir data/images \
+  --output_dir outputs/image_only_cv
+```
+
+Results from k-fold CV are saved as:
+
+- Per-fold metrics: outputs/image_only_cv/cv_fold_metrics.csv
+- Aggregated summary: outputs/image_only_cv/cv_summary.csv (mean ± std)
+- Per-fold artifacts: outputs/image_only_cv/fold_1/, fold_2/, …
 
 Model Architecture
 
@@ -88,7 +137,8 @@ Model Architecture
 
 Training Details
 
-- Train/validation split: 80/20 (stratified)
+- Train/validation split: 80/20 (single-split mode, stratified)
+- Cross-validation: Stratified k-fold (k=5)
 - Data augmentation: Horizontal flip, small rotations, color jitter
 - Optimizer: Adam (lr = 1e-4)
 - Loss: CrossEntropyLoss
@@ -96,11 +146,11 @@ Training Details
 - Batch size: 8
 - Hardware: CPU or GPU (auto-detected)
 
-Hyperparameters were intentionally kept conservative to reduce overfitting given the small dataset size.
+Hyperparameters were intentionally conservative to mitigate overfitting given the extremely small dataset size.
 
 Evaluation Metrics
 
-The following metrics are reported on the validation set:
+The following metrics are reported:
 
 - Accuracy
 - Precision
@@ -108,50 +158,57 @@ The following metrics are reported on the validation set:
 - F1 score
 - ROC-AUC (threshold-independent)
 
-Metrics and plots are saved automatically to the specified output_dir.
+Metrics and plots are saved automatically to the specified output directory.
 
-Key Results (15 epochs)
+Key Results
 
-| Model | Accuracy | F1 | Recall | ROC-AUC |
-|-------|----------|----|--------|---------|
-| Image-only | 60.0% | 69.23% | 81.82% | 53.54% |
-| Image + clinical | 55.0% | 60.87% | 63.64% | 51.52% |
+Single-Split Results (Sanity Check, 15 epochs)
 
-Summary:
+| Model            | Accuracy | F1     | Recall | ROC-AUC |
+|-----------------|----------|--------|--------|---------|
+| Image-only      | 60.0%    | 69.23% | 81.82% | 53.54%  |
+| Image + clinical| 55.0%    | 60.87% | 63.64% | 51.52%  |
 
-- The image-only model performed best across all metrics
-- Adding clinical features did not improve performance on this dataset
-- High recall in the image-only model suggests good sensitivity to positive cases
+Stratified 5-Fold Cross-Validation (Primary Results)
+
+Image-only model (mean ± std across folds):
+
+- Accuracy: 63.0% ± 7.5%
+- F1: 61.8% ± 16.8%
+- Recall: 68.0% ± 26.4%
+- ROC-AUC: 58.8% ± 10.0%
+
+Cross-validation shows performance consistently above random chance, with high variance across folds, which is expected given the limited dataset size and small validation sets per fold.
 
 Interpretation
 
-The lack of improvement from clinical features is likely due to:
-
-- Very small dataset size (100 samples)
-- Coarse, binary symptom features
-- Increased variance from additional model parameters
-
-This result highlights that additional features do not always improve performance, especially under data constraints.
+- The image-only model consistently outperformed the multimodal variant.
+- Adding clinical features did not improve performance, likely due to:
+  - Extremely small dataset size
+  - Coarse, binary symptom features
+  - Increased variance from additional parameters
+- Cross-validation provides a more reliable estimate than a single split and highlights uncertainty in performance.
+- This demonstrates that additional features do not automatically improve performance, particularly under severe data constraints.
 
 Limitations
 
-- Extremely small dataset → high variance
-- Single train/validation split
-- Limited clinical feature granularity
-- No external validation cohort
+- Extremely small dataset (100 samples)
+- High variance across validation folds
+- Binary clinical features lack granularity
+- No external or temporal validation cohort
 
 Future Work
 
-With more data or time:
+With additional data or time:
 
-- Stratified k-fold cross-validation
-- Larger and more diverse dataset
+- Larger, more diverse dataset
 - Richer clinical features (severity, duration, demographics)
 - Model interpretability (Grad-CAM)
 - Calibration and robustness analysis
+- External validation on independent datasets
 
 Reproducibility Notes
 
-- Random seed supported via `--seed`
+- Random seed controlled via --seed
 - All dependencies pinned in requirements.txt
-- Metrics and outputs saved to disk for inspection
+- All metrics and artifacts saved for inspection
